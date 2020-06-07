@@ -57,7 +57,7 @@ let nat32 s at =
   try I32.of_string_u s with Failure _ -> error at "i32 constant out of range"
 
 let name s at =
-  try Utf8.decode s with Utf8.Utf8 -> error at "invalid UTF-8 encoding"
+  try Utf8.decode s with Utf8.Utf8 -> error at "malformed UTF-8 encoding"
 
 
 (* Symbolic variables *)
@@ -72,11 +72,14 @@ let empty_types () = {space = empty (); list = []}
 
 type context =
   { types : types; tables : space; memories : space;
-    funcs : space; locals : space; globals : space; labels : int32 VarMap.t }
+    funcs : space; locals : space; globals : space;
+    data : space; elems : space;
+    labels : int32 VarMap.t }
 
 let empty_context () =
   { types = empty_types (); tables = empty (); memories = empty ();
     funcs = empty (); locals = empty (); globals = empty ();
+    data = empty (); elems = empty ();
     labels = VarMap.empty }
 
 let enter_func (c : context) =
@@ -92,6 +95,8 @@ let local (c : context) x = lookup "local" c.locals x
 let global (c : context) x = lookup "global" c.globals x
 let table (c : context) x = lookup "table" c.tables x
 let memory (c : context) x = lookup "memory" c.memories x
+let elem (c : context) x = lookup "elem segment" c.elems x
+let data (c : context) x = lookup "data segment" c.data x
 let label (c : context) x =
   try VarMap.find x.it c.labels
   with Not_found -> error x.at ("unknown label " ^ x.it)
@@ -119,6 +124,8 @@ let bind_local (c : context) x = bind "local" c.locals x
 let bind_global (c : context) x = bind "global" c.globals x
 let bind_table (c : context) x = bind "table" c.tables x
 let bind_memory (c : context) x = bind "memory" c.memories x
+let bind_elem (c : context) x = bind "elem segment" c.elems x
+let bind_data (c : context) x = bind "data segment" c.data x
 let bind_label (c : context) x =
   {c with labels = VarMap.add x.it 0l (VarMap.map (Int32.add 1l) c.labels)}
 
@@ -138,6 +145,8 @@ let anon_locals (c : context) ts =
 let anon_global (c : context) = anon "global" c.globals 1l
 let anon_table (c : context) = anon "table" c.tables 1l
 let anon_memory (c : context) = anon "memory" c.memories 1l
+let anon_elem (c : context) = anon "elem segment" c.elems 1l
+let anon_data (c : context) = anon "data segment" c.data 1l
 let anon_label (c : context) =
   {c with labels = VarMap.map (Int32.add 1l) c.labels}
 
@@ -153,15 +162,22 @@ let inline_type_explicit (c : context) x ft at =
 
 %}
 
+%token LPAR RPAR
+%token NAT INT FLOAT STRING VAR
+%token FUNCREF VALUE_TYPE MUT
+%token UNREACHABLE NOP DROP SELECT
+%token BLOCK END IF THEN ELSE LOOP BR BR_IF BR_TABLE
 %token NAT INT FLOAT STRING VAR VALUE_TYPE FUNCREF MUT SHARED LPAR RPAR
 %token NOP DROP BLOCK END IF THEN ELSE SELECT LOOP BR BR_IF BR_TABLE
 %token CALL CALL_INDIRECT RETURN
 %token LOCAL_GET LOCAL_SET LOCAL_TEE GLOBAL_GET GLOBAL_SET
+%token TABLE_COPY TABLE_INIT ELEM_DROP
+%token MEMORY_SIZE MEMORY_GROW MEMORY_FILL MEMORY_COPY MEMORY_INIT DATA_DROP
 %token LOAD STORE OFFSET_EQ_NAT ALIGN_EQ_NAT
 %token MEMORY_ATOMIC_WAIT MEMORY_ATOMIC_NOTIFY
 %token ATOMIC_LOAD ATOMIC_STORE ATOMIC_RMW ATOMIC_RMW_CMPXCHG
 %token CONST UNARY BINARY TEST COMPARE CONVERT
-%token UNREACHABLE MEMORY_SIZE MEMORY_GROW
+%token REF_NULL REF_FUNC
 %token FUNC START TYPE PARAM RESULT LOCAL GLOBAL
 %token TABLE ELEM MEMORY DATA OFFSET IMPORT EXPORT TABLE
 %token MODULE BIN QUOTE
@@ -339,6 +355,17 @@ plain_instr :
   | LOCAL_TEE var { fun c -> local_tee ($2 c local) }
   | GLOBAL_GET var { fun c -> global_get ($2 c global) }
   | GLOBAL_SET var { fun c -> global_set ($2 c global) }
+  | TABLE_COPY { fun c -> table_copy }
+  | TABLE_INIT var { fun c -> table_init ($2 c elem) }
+  | ELEM_DROP var { fun c -> elem_drop ($2 c elem) }
+  | LOAD offset_opt align_opt { fun c -> $1 $3 $2 }
+  | STORE offset_opt align_opt { fun c -> $1 $3 $2 }
+  | MEMORY_SIZE { fun c -> memory_size }
+  | MEMORY_GROW { fun c -> memory_grow }
+  | MEMORY_FILL { fun c -> memory_fill }
+  | MEMORY_COPY { fun c -> memory_copy }
+  | MEMORY_INIT var { fun c -> memory_init ($2 c data) }
+  | DATA_DROP var { fun c -> data_drop ($2 c data) }
   | LOAD var_opt offset_opt align_opt
     { let at1 = ati 1 in fun c -> $1 ($2 c memory at1) $4 $3 }
   | STORE var_opt offset_opt align_opt
@@ -420,22 +447,43 @@ call_instr_results_instr :
 
 block_instr :
   | BLOCK labeling_opt block END labeling_end_opt
-    { fun c -> let c' = $2 c $5 in let ts, es = $3 c' in block ts es }
+    { fun c -> let c' = $2 c $5 in let bt, es = $3 c' in block bt es }
   | LOOP labeling_opt block END labeling_end_opt
-    { fun c -> let c' = $2 c $5 in let ts, es = $3 c' in loop ts es }
+    { fun c -> let c' = $2 c $5 in let bt, es = $3 c' in loop bt es }
   | IF labeling_opt block END labeling_end_opt
-    { fun c -> let c' = $2 c $5 in let ts, es = $3 c' in if_ ts es [] }
+    { fun c -> let c' = $2 c $5 in let bt, es = $3 c' in if_ bt es [] }
   | IF labeling_opt block ELSE labeling_end_opt instr_list END labeling_end_opt
     { fun c -> let c' = $2 c ($5 @ $8) in
       let ts, es1 = $3 c' in if_ ts es1 ($6 c') }
 
-block_type :
-  | LPAR RESULT VALUE_TYPE RPAR { [$3] }
-
 block :
-  | block_type instr_list
-    { fun c -> $1, $2 c }
-  | instr_list { fun c -> [], $1 c }
+  | type_use block_param_body
+    { let at1 = ati 1 in
+      fun c ->
+      VarBlockType (inline_type_explicit c ($1 c type_) (fst $2) at1),
+      snd $2 c }
+  | block_param_body  /* Sugar */
+    { let at = at () in
+      fun c ->
+      let bt =
+        match fst $1 with
+        | FuncType ([], []) -> ValBlockType None
+        | FuncType ([], [t]) -> ValBlockType (Some t)
+        | ft ->  VarBlockType (inline_type c ft at)
+      in bt, snd $1 c }
+
+block_param_body :
+  | block_result_body { $1 }
+  | LPAR PARAM value_type_list RPAR block_param_body
+    { let FuncType (ins, out) = fst $5 in
+      FuncType ($3 @ ins, out), snd $5 }
+
+block_result_body :
+  | instr_list { FuncType ([], []), $1 }
+  | LPAR RESULT value_type_list RPAR block_result_body
+    { let FuncType (ins, out) = fst $5 in
+      FuncType (ins, $3 @ out), snd $5 }
+
 
 expr :  /* Sugar */
   | LPAR expr1 RPAR
@@ -446,12 +494,12 @@ expr1 :  /* Sugar */
   | CALL_INDIRECT call_expr_type
     { fun c -> let x, es = $2 c in es, call_indirect x }
   | BLOCK labeling_opt block
-    { fun c -> let c' = $2 c [] in let ts, es = $3 c' in [], block ts es }
+    { fun c -> let c' = $2 c [] in let bt, es = $3 c' in [], block bt es }
   | LOOP labeling_opt block
-    { fun c -> let c' = $2 c [] in let ts, es = $3 c' in [], loop ts es }
+    { fun c -> let c' = $2 c [] in let bt, es = $3 c' in [], loop bt es }
   | IF labeling_opt if_block
     { fun c -> let c' = $2 c [] in
-      let ts, (es, es1, es2) = $3 c c' in es, if_ ts es1 es2 }
+      let bt, (es, es1, es2) = $3 c c' in es, if_ bt es1 es2 }
 
 call_expr_type :
   | type_use call_expr_params
@@ -479,8 +527,32 @@ call_expr_results :
 
 
 if_block :
-  | block_type if_block { fun c c' -> let ts, ess = $2 c c' in $1 @ ts, ess }
-  | if_ { fun c c' -> [], $1 c c' }
+  | type_use if_block_param_body
+    { let at = at () in
+      fun c c' ->
+      VarBlockType (inline_type_explicit c ($1 c type_) (fst $2) at),
+      snd $2 c c' }
+  | if_block_param_body  /* Sugar */
+    { let at = at () in
+      fun c c' ->
+      let bt =
+        match fst $1 with
+        | FuncType ([], []) -> ValBlockType None
+        | FuncType ([], [t]) -> ValBlockType (Some t)
+        | ft ->  VarBlockType (inline_type c ft at)
+      in bt, snd $1 c c' }
+
+if_block_param_body :
+  | if_block_result_body { $1 }
+  | LPAR PARAM value_type_list RPAR if_block_param_body
+    { let FuncType (ins, out) = fst $5 in
+      FuncType ($3 @ ins, out), snd $5 }
+
+if_block_result_body :
+  | if_ { FuncType ([], []), $1 }
+  | LPAR RESULT value_type_list RPAR if_block_result_body
+    { let FuncType (ins, out) = fst $5 in
+      FuncType (ins, $3 @ out), snd $5 }
 
 if_ :
   | expr if_
@@ -514,24 +586,24 @@ func :
 func_fields :
   | type_use func_fields_body
     { fun c x at ->
-      let t = inline_type_explicit c ($1 c type_) (fst $2) at in
-      [{(snd $2 (enter_func c)) with ftype = t} @@ at], [], [] }
+      let y = inline_type_explicit c ($1 c type_) (fst $2) at in
+      [{(snd $2 (enter_func c)) with ftype = y} @@ at], [], [] }
   | func_fields_body  /* Sugar */
     { fun c x at ->
-      let t = inline_type c (fst $1) at in
-      [{(snd $1 (enter_func c)) with ftype = t} @@ at], [], [] }
+      let y = inline_type c (fst $1) at in
+      [{(snd $1 (enter_func c)) with ftype = y} @@ at], [], [] }
   | inline_import type_use func_fields_import  /* Sugar */
     { fun c x at ->
-      let t = inline_type_explicit c ($2 c type_) $3 at in
+      let y = inline_type_explicit c ($2 c type_) $3 at in
       [],
       [{ module_name = fst $1; item_name = snd $1;
-         idesc = FuncImport t @@ at } @@ at ], [] }
+         idesc = FuncImport y @@ at } @@ at ], [] }
   | inline_import func_fields_import  /* Sugar */
     { fun c x at ->
-      let t = inline_type c $2 at in
+      let y = inline_type c $2 at in
       [],
       [{ module_name = fst $1; item_name = snd $1;
-         idesc = FuncImport t @@ at } @@ at ], [] }
+         idesc = FuncImport y @@ at } @@ at ], [] }
   | inline_export func_fields  /* Sugar */
     { fun c x at ->
       let fns, ims, exs = $2 c x at in fns, ims, $1 (FuncExport x) c :: exs }
@@ -579,17 +651,63 @@ func_body :
 
 /* Tables, Memories & Globals */
 
+table_use :
+  | LPAR TABLE var RPAR { fun c -> $3 c }
+
+memory_use :
+  | LPAR MEMORY var RPAR { fun c -> $3 c }
+
 offset :
   | LPAR OFFSET const_expr RPAR { $3 }
   | expr { let at = at () in fun c -> $1 c @@ at }  /* Sugar */
 
+elem_kind :
+  | FUNC { FuncRefType }
+
+elem_expr :
+  | LPAR REF_NULL elem_kind RPAR { let at = at () in fun c -> ref_null @@ at }
+  | LPAR REF_FUNC var RPAR { let at = at () in fun c -> ref_func ($3 c func) @@ at }
+
+elem_expr_list :
+  | /* empty */ { fun c -> [] }
+  | elem_expr elem_expr_list { fun c -> $1 c :: $2 c }
+
+elem_var_list :
+  | var_list
+    { let f = function {at; _} as x -> ref_func x @@ at in
+      fun c lookup -> List.map f ($1 c lookup) }
+
+elem_list :
+  | elem_kind elem_var_list
+    { ($1, fun c -> $2 c func) }
+  | elem_type elem_expr_list
+    { ($1, fun c -> $2 c) }
+
+
 elem :
-  | LPAR ELEM var offset var_list RPAR
+  | LPAR ELEM bind_var_opt elem_list RPAR
     { let at = at () in
-      fun c -> {index = $3 c table; offset = $4 c; init = $5 c func} @@ at }
-  | LPAR ELEM offset var_list RPAR  /* Sugar */
+      fun c -> ignore ($3 c anon_elem bind_elem);
+      fun () ->
+      { etype = (fst $4); einit = (snd $4) c; emode = Passive @@ at } @@ at }
+  | LPAR ELEM bind_var_opt table_use offset elem_list RPAR
     { let at = at () in
-      fun c -> {index = 0l @@ at; offset = $3 c; init = $4 c func} @@ at }
+      fun c -> ignore ($3 c anon_elem bind_elem);
+      fun () ->
+      { etype = (fst $6); einit = (snd $6) c;
+        emode = Active {index = $4 c table; offset = $5 c} @@ at } @@ at }
+  | LPAR ELEM bind_var_opt offset elem_list RPAR  /* Sugar */
+    { let at = at () in
+      fun c -> ignore ($3 c anon_elem bind_elem);
+      fun () ->
+      { etype = (fst $5); einit = (snd $5) c;
+        emode = Active {index = 0l @@ at; offset = $4 c} @@ at } @@ at }
+  | LPAR ELEM bind_var_opt offset elem_var_list RPAR  /* Sugar */
+    { let at = at () in
+      fun c -> ignore ($3 c anon_elem bind_elem);
+      fun () ->
+      { etype = FuncRefType; einit = $5 c func;
+        emode = Active {index = 0l @@ at; offset = $4 c} @@ at } @@ at }
 
 table :
   | LPAR TABLE bind_var_opt table_fields RPAR
@@ -608,20 +726,40 @@ table_fields :
   | inline_export table_fields  /* Sugar */
     { fun c x at -> let tabs, elems, ims, exs = $2 c x at in
       tabs, elems, ims, $1 (TableExport x) c :: exs }
-  | elem_type LPAR ELEM var_list RPAR  /* Sugar */
+  | elem_type LPAR ELEM elem_var_list RPAR  /* Sugar */
     { fun c x at ->
-      let init = $4 c func in let size = Int32.of_int (List.length init) in
+      let offset = [i32_const (0l @@ at) @@ at] @@ at in
+      let einit = $4 c func in
+      let size = Lib.List32.length einit in
+      let emode = Active {index = x; offset} @@ at in
       [{ttype = TableType ({min = size; max = Some size}, $1)} @@ at],
-      [{index = x; offset = [i32_const (0l @@ at) @@ at] @@ at; init} @@ at],
+      [{etype = FuncRefType; einit; emode} @@ at],
+      [], [] }
+  | elem_type LPAR ELEM elem_expr elem_expr_list RPAR  /* Sugar */
+    { fun c x at ->
+      let offset = [i32_const (0l @@ at) @@ at] @@ at in
+      let einit = (fun c -> $4 c :: $5 c) c in
+      let size = Lib.List32.length einit in
+      let emode = Active {index = x; offset} @@ at in
+      [{ttype = TableType ({min = size; max = Some size}, $1)} @@ at],
+      [{etype = FuncRefType; einit; emode} @@ at],
       [], [] }
 
 data :
-  | LPAR DATA var offset string_list RPAR
+  | LPAR DATA bind_var_opt string_list RPAR
     { let at = at () in
-      fun c -> {index = $3 c memory; offset = $4 c; init = $5} @@ at }
-  | LPAR DATA offset string_list RPAR  /* Sugar */
-    { let at = at () in
-      fun c -> {index = 0l @@ at; offset = $3 c; init = $4} @@ at }
+      fun c -> ignore ($3 c anon_data bind_data);
+      fun () -> {dinit = $4; dmode = Passive @@ at} @@ at }
+ | LPAR DATA bind_var_opt memory_use offset string_list RPAR
+   { let at = at () in
+     fun c -> ignore ($3 c anon_data bind_data);
+     fun () ->
+     {dinit = $6; dmode = Active {index = $4 c memory; offset = $5 c} @@ at} @@ at }
+ | LPAR DATA bind_var_opt offset string_list RPAR  /* Sugar */
+   { let at = at () in
+     fun c -> ignore ($3 c anon_data bind_data);
+     fun () ->
+     {dinit = $5; dmode = Active {index = 0l @@ at; offset = $4 c} @@ at} @@ at }
 
 memory :
   | LPAR MEMORY bind_var_opt memory_fields RPAR
@@ -642,7 +780,10 @@ memory_fields :
       mems, data, ims, $1 (MemoryExport x) c :: exs }
   | LPAR DATA string_list RPAR  /* Sugar */
     { fun c x at ->
+      let offset = [i32_const (0l @@ at) @@ at] @@ at in
       let size = Int32.(div (add (of_int (String.length $3)) 65535l) 65536l) in
+      [{mtype = MemoryType {min = size; max = Some size}} @@ at],
+      [{dinit = $3; dmode = Active {index = x; offset} @@ at} @@ at],
       [{mtype = MemoryType ({min = size; max = Some size}, Unshared)} @@ at],
       [{index = x;
         offset = [i32_const (0l @@ at) @@ at] @@ at; init = $3} @@ at],
@@ -656,7 +797,7 @@ global :
 
 global_fields :
   | global_type const_expr
-    { fun c x at -> [{gtype = $1; value = $2 c} @@ at], [], [] }
+    { fun c x at -> [{gtype = $1; ginit = $2 c} @@ at], [], [] }
   | inline_import global_type  /* Sugar */
     { fun c x at ->
       [],
@@ -754,7 +895,7 @@ module_fields1 :
       fun () -> let mems, data, ims, exs = mmf () in let m = mf () in
       if mems <> [] && m.imports <> [] then
         error (List.hd m.imports).at "import after memory definition";
-      { m with memories = mems @ m.memories; data = data @ m.data;
+      { m with memories = mems @ m.memories; datas = data @ m.datas;
         imports = ims @ m.imports; exports = exs @ m.exports } }
   | func module_fields
     { fun c -> let ff = $1 c in let mf = $2 c in
@@ -764,13 +905,13 @@ module_fields1 :
       { m with funcs = funcs @ m.funcs;
         imports = ims @ m.imports; exports = exs @ m.exports } }
   | elem module_fields
-    { fun c -> let mf = $2 c in
-      fun () -> let m = mf () in
-      {m with elems = $1 c :: m.elems} }
+    { fun c -> let ef = $1 c in let mf = $2 c in
+      fun () -> let elems = ef () in let m = mf () in
+      {m with elems = elems :: m.elems} }
   | data module_fields
-    { fun c -> let mf = $2 c in
-      fun () -> let m = mf () in
-      {m with data = $1 c :: m.data} }
+    { fun c -> let df = $1 c in let mf = $2 c in
+      fun () -> let data = df () in let m = mf () in
+      {m with datas = data :: m.datas} }
   | start module_fields
     { fun c -> let mf = $2 c in
       fun () -> let m = mf () in let x = $1 c in
@@ -816,9 +957,9 @@ script_var_opt :
 script_module :
   | module_ { $1 }
   | LPAR MODULE module_var_opt BIN string_list RPAR
-    { $3, Encoded ("binary", $5) @@ at() }
+    { $3, Encoded ("binary:" ^ string_of_pos (at()).left, $5) @@ at() }
   | LPAR MODULE module_var_opt QUOTE string_list RPAR
-    { $3, Quoted ("quote", $5) @@ at() }
+    { $3, Quoted ("quote:" ^ string_of_pos (at()).left, $5) @@ at() }
 
 action :
   | LPAR INVOKE module_var_opt name const_list RPAR

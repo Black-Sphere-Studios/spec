@@ -1,4 +1,16 @@
-[![Build Status](https://travis-ci.org/WebAssembly/spec.svg?branch=master)](https://travis-ci.org/WebAssembly/spec)
+[![Build Status](https://travis-ci.org/WebAssembly/bulk-memory-operations.svg?branch=master)](https://travis-ci.org/WebAssembly/bulk-memory-operations)
+
+# Bulk Memory Operations Proposal for WebAssembly
+
+This repository is a clone of github.com/WebAssembly/spec/. It is meant for
+discussion, prototype specification and implementation of a proposal to add
+bulk memory operations (e.g. instructions with behavior similar to `memmove`
+and `memset`) to WebAssembly.
+
+See the [overview](proposals/bulk-memory-operations/Overview.md) for a summary of the
+proposal.
+
+Original README from upstream repository follows...
 
 # spec
 

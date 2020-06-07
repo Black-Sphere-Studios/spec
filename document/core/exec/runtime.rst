@@ -59,8 +59,13 @@ It is either a sequence of :ref:`values <syntax-val>` or a :ref:`trap <syntax-tr
 Store
 ~~~~~
 
+The *store* represents all global state that can be manipulated by WebAssembly programs.
+It consists of the runtime representation of all *instances* of :ref:`functions <syntax-funcinst>`, :ref:`tables <syntax-tableinst>`, :ref:`memories <syntax-meminst>`, and :ref:`globals <syntax-globalinst>`, :ref:`element segments <syntax-eleminst>`, and :ref:`data segments <syntax-datainst>` that have been :ref:`allocated <alloc>` during the life time of the abstract machine. [#gc]_
 .. todo:: since allocation order is non-deterministic in the presence of threads, we can no longer use ordered lists but need mappings from abstract addresses to instances.
 
+It is an invariant of the semantics that no element or data instance is :ref:`addressed <syntax-addr>` from anywhere else but the owning module instances.
+
+Syntactically, the store is defined as a :ref:`record <notation-record>` listing the existing instances of each category:
 A *store* represents all state that can be manipulated by WebAssembly programs within a single :ref:`thread <syntax-thread>`.
 It consists of the runtime representation of all *instances* of :ref:`functions <syntax-funcinst>`, :ref:`tables <syntax-tableinst>`, :ref:`memories <syntax-meminst>`, and :ref:`globals <syntax-globalinst>` that have been :ref:`allocated <alloc>` during the life time of that thread. [#gc]_
 
@@ -73,7 +78,9 @@ Syntactically, a store is defined as a :ref:`record <notation-record>` listing t
      \SFUNCS & \funcinst^\ast, \\
      \STABLES & \tableinst^\ast, \\
      \SMEMS & \meminst^\ast, \\
-     \SGLOBALS & \globalinst^\ast ~\} \\
+     \SGLOBALS & \globalinst^\ast, \\
+     \SELEMS & \eleminst^\ast, \\
+     \SDATAS & \datainst^\ast ~\} \\
      \end{array}
    \end{array}
 
@@ -91,6 +98,7 @@ Convention
 * The meta variable :math:`S` ranges over stores where clear from context.
 
 
+.. index:: ! address, store, function instance, table instance, memory instance, global instance, element instance, data instance, embedder
 .. index:: ! shared store, memory instance, module, allocation
    pair: abstract syntax; shared store
 .. _syntax-sharedstore:
@@ -131,19 +139,27 @@ Convention
    pair: abstract syntax; table address
    pair: abstract syntax; memory address
    pair: abstract syntax; global address
+   pair: abstract syntax; element address
+   pair: abstract syntax; data address
    pair: function; address
    pair: table; address
    pair: memory; address
    pair: global; address
+   pair: element; address
+   pair: data; address
 .. _syntax-funcaddr:
 .. _syntax-tableaddr:
 .. _syntax-memaddr:
 .. _syntax-globaladdr:
+.. _syntax-elemaddr:
+.. _syntax-dataaddr:
 .. _syntax-addr:
 
 Addresses
 ~~~~~~~~~
 
+:ref:`Function instances <syntax-funcinst>`, :ref:`table instances <syntax-tableinst>`, :ref:`memory instances <syntax-meminst>`, and :ref:`global instances <syntax-globalinst>`, :ref:`element instances <syntax-eleminst>`, and :ref:`data instances <syntax-datainst>` in the :ref:`store <syntax-store>` are referenced with abstract *addresses*.
+These are simply indices into the respective store component.
 :ref:`Function instances <syntax-funcinst>`, :ref:`table instances <syntax-tableinst>`, :ref:`memory instances <syntax-meminst>`, and :ref:`global instances <syntax-globalinst>` in the :ref:`store <syntax-store>` are referenced with abstract *addresses*.
 Each address uniquely determines a respective component in the store.
 Other than that the form that addresses take is unspecified and cannot be observed.
@@ -160,6 +176,10 @@ Other than that the form that addresses take is unspecified and cannot be observ
      \addr \\
    \production{(global address)} & \globaladdr &::=&
      \addr \\
+   \production{(element address)} & \elemaddr &::=&
+     \addr \\
+   \production{(data address)} & \dataaddr &::=&
+     \addr \\
    \end{array}
 
 An :ref:`embedder <embedder>` may assign identity to :ref:`exported <syntax-export>` store objects corresponding to their addresses,
@@ -174,6 +194,8 @@ even where this identity is not observable from within WebAssembly code itself
    not an offset *inside* a memory instance.
 
 
+
+.. index:: ! instance, function type, function instance, table instance, memory instance, global instance, element instance, data instance, export instance, table address, memory address, global address, element address, data address, index, name
 .. index:: ! instance, function type, function instance, table instance, memory instance, global instance, export instance, table address, memory address, global address, index, name
    pair: abstract syntax; module instance
    pair: module; instance
@@ -195,6 +217,8 @@ and collects runtime representations of all entities that are imported, defined,
      \MITABLES & \tableaddr^\ast, \\
      \MIMEMS & \memaddr^\ast, \\
      \MIGLOBALS & \globaladdr^\ast, \\
+     \MIELEMS & \elemaddr^\ast, \\
+     \MIDATAS & \dataaddr^\ast, \\
      \MIEXPORTS & \exportinst^\ast ~\} \\
      \end{array}
    \end{array}
@@ -317,6 +341,42 @@ It holds an individual :ref:`value <syntax-val>` and a flag indicating whether i
 The value of mutable globals can be mutated through :ref:`variable instructions <syntax-instr-variable>` or by external means provided by the :ref:`embedder <embedder>`.
 
 
+.. index:: ! element instance, element segment, embedder, element expression
+   pair: abstract syntax; element instance
+   pair: element; instance
+.. _syntax-eleminst:
+
+Element Instances
+~~~~~~~~~~~~~~~~~
+
+An *element instance* is the runtime representation of an :ref:`element segment <syntax-elem>`.
+It holds a vector of function elements.
+
+.. math::
+  \begin{array}{llll}
+  \production{(element instance)} & \eleminst &::=&
+    \{ \EIELEM~\vec(\funcelem) \} \\
+  \end{array}
+
+
+.. index:: ! data instance, data segment, embedder, byte
+  pair: abstract syntax; data instance
+  pair: data; instance
+.. _syntax-datainst:
+
+Data Instances
+~~~~~~~~~~~~~~
+
+An *data instance* is the runtime representation of a :ref:`data segment <syntax-data>`.
+It holds a vector of :ref:`bytes <syntax-byte>`.
+
+.. math::
+  \begin{array}{llll}
+  \production{(data instance)} & \datainst &::=&
+    \{ \DIDATA~\vec(\byte) \} \\
+  \end{array}
+
+
 .. index:: ! export instance, export, name, external value
    pair: abstract syntax; export instance
    pair: export; instance
@@ -393,7 +453,6 @@ It filters out entries of a specific kind in an order-preserving fashion:
 * :math:`\evglobals(\externval^\ast) = [\globaladdr ~|~ (\EVGLOBAL~\globaladdr) \in \externval^\ast]`
 
 
-
 .. index:: ! stack, ! frame, ! label, instruction, store, activation, function, call, local, module instance
    pair: abstract syntax; frame
    pair: abstract syntax; label
@@ -445,7 +504,7 @@ Intuitively, :math:`\instr^\ast` is the *continuation* to execute when the branc
    For example, a loop label has the form
 
    .. math::
-      \LABEL_n\{\LOOP~[t^?]~\dots~\END\}
+      \LABEL_n\{\LOOP~\dots~\END\}
 
    When performing a branch to this label, this executes the loop, effectively restarting it from the beginning.
    Conversely, a simple block label has the form
@@ -480,15 +539,21 @@ Conventions
 
 * The meta variable :math:`F` ranges over frames where clear from context.
 
-.. note::
-   In the current version of WebAssembly, the arities of labels and frames cannot be larger than :math:`1`.
-   This may be generalized in future versions.
+* The following auxiliary definition takes a :ref:`block type <syntax-blocktype>` and looks up the :ref:`function type <syntax-functype>` that it denotes in the current frame:
+
+.. math::
+   \begin{array}{lll}
+   \expand_F(\typeidx) &=& F.\AMODULE.\MITYPES[\typeidx] \\
+   \expand_F([\valtype^?]) &=& [] \to [\valtype^?] \\
+   \end{array}
 
 
 .. index:: ! administrative instructions, function, function instance, function address, label, frame, instruction, trap, call, memory, memory instance, table, table instance, element, data, segment
    pair:: abstract syntax; administrative instruction
 .. _syntax-trap:
 .. _syntax-invoke:
+.. _syntax-table_get:
+.. _syntax-table_set:
 .. _syntax-init_elem:
 .. _syntax-init_data:
 .. _syntax-suspend:
@@ -508,6 +573,8 @@ In order to express the reduction of :ref:`traps <trap>`, :ref:`calls <syntax-ca
      \dots \\ &&|&
      \TRAP \\ &&|&
      \INVOKE~\funcaddr \\ &&|&
+     \TABLEGET \\ &&|&
+     \TABLESET \\ &&|&
      \INITELEM~\tableaddr~\u32~\funcidx^\ast \\ &&|&
      \INITDATA~\memaddr~\u32~\byte^\ast \\ &&|&
      \WAITX~\loc~n \\ &&|&
@@ -522,10 +589,10 @@ Traps are bubbled up through nested instruction sequences, ultimately reducing t
 The |INVOKE| instruction represents the imminent invocation of a :ref:`function instance <syntax-funcinst>`, identified by its :ref:`address <syntax-funcaddr>`.
 It unifies the handling of different forms of calls.
 
-The |INITELEM| and |INITDATA| instructions perform initialization of :ref:`element <syntax-elem>` and :ref:`data <syntax-data>` segments during module :ref:`instantiation <exec-instantiation>`.
+The |TABLEGET| and |TABLESET| instructions are used to simplify the specification of the |TABLEINIT| and |TABLECOPY| instructions.
 
 .. note::
-   The reason for splitting instantiation into individual reduction steps is to provide a semantics that is compatible with future extensions like threads.
+   In the future, |TABLEGET| and |TABLESET| may be provided as regular instructions.
 
 .. todo:: describe |WAITX| and |NOTIFYX|
 
@@ -547,7 +614,7 @@ That way, the end of the inner instruction sequence is known when part of an out
    When |END| is reached, i.e., the inner instruction sequence has been reduced to the empty sequence -- or rather, a sequence of :math:`n` |CONST| instructions representing the resulting values -- then the |LABEL| instruction is eliminated courtesy of its own :ref:`reduction rule <exec-label>`:
 
    .. math::
-      \LABEL_n\{\instr^n\}~\val^\ast~\END \quad\stepto\quad \val^n
+      \LABEL_m\{\instr^\ast\}~\val^n~\END \quad\stepto\quad \val^n
 
    This can be interpreted as removing the label from the stack and only leaving the locally accumulated operand values.
 

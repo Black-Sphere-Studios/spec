@@ -102,6 +102,10 @@ struct
       match f x with
       | None -> map_filter f xs
       | Some y -> y :: map_filter f xs
+
+  let rec concat_map f = function
+    | [] -> []
+    | x::xs -> f x @ concat_map f xs
 end
 
 module List32 =
@@ -134,6 +138,11 @@ struct
     | 0l, _ -> xs
     | n, _::xs' when n > 0l -> drop (Int32.sub n 1l) xs'
     | _ -> failwith "drop"
+
+  let rec mapi f xs = mapi' f 0l xs
+  and mapi' f i = function
+    | [] -> []
+    | x::xs -> f i x :: mapi' f (Int32.add i 1l) xs
 end
 
 module Array32 =

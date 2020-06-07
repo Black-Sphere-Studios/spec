@@ -179,7 +179,10 @@ rule token = parse
   | '"'character*'\\'_
     { error_nest (Lexing.lexeme_end_p lexbuf) lexbuf "illegal escape" }
 
+  | "funcref" { FUNCREF }
   | (nxx as t) { VALUE_TYPE (value_type t) }
+  | "mut" { MUT }
+
   | (nxx as t)".const"
     { let open Source in
       CONST (numop t
@@ -192,6 +195,8 @@ rule token = parse
         (fun s -> let n = F64.of_string s.it in
           f64_const (n @@ s.at), Values.F64 n))
     }
+  | "ref.null" { REF_NULL }
+  | "ref.func" { REF_FUNC }
   | "funcref" { FUNCREF }
   | "mut" { MUT }
   | "shared" { SHARED }
@@ -218,6 +223,17 @@ rule token = parse
   | "local.tee" { LOCAL_TEE }
   | "global.get" { GLOBAL_GET }
   | "global.set" { GLOBAL_SET }
+
+  | "table.copy" { TABLE_COPY }
+  | "table.init" { TABLE_INIT }
+  | "elem.drop" { ELEM_DROP }
+
+  | "memory.size" { MEMORY_SIZE }
+  | "memory.grow" { MEMORY_GROW }
+  | "memory.fill" { MEMORY_FILL }
+  | "memory.copy" { MEMORY_COPY }
+  | "memory.init" { MEMORY_INIT }
+  | "data.drop" { DATA_DROP }
 
   | (nxx as t)".load"
     { LOAD (fun x a o ->
@@ -328,6 +344,9 @@ rule token = parse
   | (ixx as t)".clz" { UNARY (intop t i32_clz i64_clz) }
   | (ixx as t)".ctz" { UNARY (intop t i32_ctz i64_ctz) }
   | (ixx as t)".popcnt" { UNARY (intop t i32_popcnt i64_popcnt) }
+  | (ixx as t)".extend8_s" { UNARY (intop t i32_extend8_s i64_extend8_s) }
+  | (ixx as t)".extend16_s" { UNARY (intop t i32_extend16_s i64_extend16_s) }
+  | "i64.extend32_s" { UNARY i64_extend32_s }
   | (fxx as t)".neg" { UNARY (floatop t f32_neg f64_neg) }
   | (fxx as t)".abs" { UNARY (floatop t f32_abs f64_abs) }
   | (fxx as t)".sqrt" { UNARY (floatop t f32_sqrt f64_sqrt) }
@@ -391,6 +410,14 @@ rule token = parse
     { CONVERT (intop t i32_trunc_f64_s i64_trunc_f64_s) }
   | (ixx as t)".trunc_f64_u"
     { CONVERT (intop t i32_trunc_f64_u i64_trunc_f64_u) }
+  | (ixx as t)".trunc_sat_f32_s"
+    { CONVERT (intop t i32_trunc_sat_f32_s i64_trunc_sat_f32_s) }
+  | (ixx as t)".trunc_sat_f32_u"
+    { CONVERT (intop t i32_trunc_sat_f32_u i64_trunc_sat_f32_u) }
+  | (ixx as t)".trunc_sat_f64_s"
+    { CONVERT (intop t i32_trunc_sat_f64_s i64_trunc_sat_f64_s) }
+  | (ixx as t)".trunc_sat_f64_u"
+    { CONVERT (intop t i32_trunc_sat_f64_u i64_trunc_sat_f64_u) }
   | (fxx as t)".convert_i32_s"
     { CONVERT (floatop t f32_convert_i32_s f64_convert_i32_s) }
   | (fxx as t)".convert_i32_u"
@@ -403,9 +430,6 @@ rule token = parse
   | "f64.reinterpret_i64" { CONVERT f64_reinterpret_i64 }
   | "i32.reinterpret_f32" { CONVERT i32_reinterpret_f32 }
   | "i64.reinterpret_f64" { CONVERT i64_reinterpret_f64 }
-
-  | "memory.size" { MEMORY_SIZE }
-  | "memory.grow" { MEMORY_GROW }
 
   | "type" { TYPE }
   | "func" { FUNC }
